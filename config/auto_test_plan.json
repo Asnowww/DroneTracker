@@ -1,0 +1,42 @@
+{
+  "base_config": "config/tracking_config.json",
+  "weights": "runs/detect/drone_airsim/weights/best.pt",
+  "seconds": 90,
+  "settle_s": 5.0,
+  "report_dir": "runs/auto_test",
+  "baseline_variant": "no_prediction",
+  "acceptance": {
+    "visible_rate_min": 0.98,
+    "lost_count_max": 0,
+    "center_error_p95_px_max": 67.71
+  },
+  "acceptance_overrides": {
+    "figure8": {
+      "visible_rate_min": 0.95,
+      "lost_count_max": 8,
+      "center_error_p95_px_max": 160.0
+    }
+  },
+  "patterns": ["front_sweep", "figure8", "lateral_dash"],
+  "variants": [
+    {
+      "name": "no_prediction",
+      "overrides": { "prediction": { "enabled": false } }
+    },
+    {
+      "name": "kalman",
+      "overrides": { "prediction": { "enabled": true, "model": "kalman", "horizon_s": 0.2 } }
+    },
+    {
+      "name": "imm",
+      "overrides": {
+        "prediction": {
+          "enabled": true,
+          "model": "imm",
+          "horizon_s": 0.2,
+          "imm": { "cv_scale": 1.0, "ca_scale": 4.0, "maneuver_scale": 25.0, "transition_stay": 0.9 }
+        }
+      }
+    }
+  ]
+}

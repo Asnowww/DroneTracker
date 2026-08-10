@@ -1,0 +1,514 @@
+\documentclass[UTF8,a4paper,11pt]{ctexart}
+\usepackage{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{longtable}
+
+\geometry{left=2.2cm,right=2.2cm,top=2.4cm,bottom=2.4cm}
+\hypersetup{colorlinks=true,linkcolor=blue,urlcolor=blue}
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  frame=single,
+  columns=fullflexible,
+  keepspaces=true
+}
+
+\title{AirSim + YOLOv8 无人机自动追踪算法原理与实现}
+\author{airsim\_yolov8\_drone\_tracker}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+本文档说明 AirSim 双无人机追踪系统的算法原理和工程实现。系统使用 Tracker 无人机的前视相机作为唯一视觉输入，通过 YOLOv8 检测 Target 无人机，再使用图像平面 Kalman 预测器补偿视觉和控制延迟，最后通过视觉伺服控制 Tracker 的 yaw、垂直速度和前后速度，使 Target 保持在画面中心附近。文档覆盖检测、预测、控制、丢失恢复、日志指标、配置项和验证方法。
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+\section{系统目标}
+
+系统目标是让 AirSim 中的两台无人机完成自动视觉追踪：
+
+\begin{itemize}
+  \item \textbf{Tracker}: 主控无人机，使用机载前视相机观察目标。
+  \item \textbf{Target}: 被追踪无人机，是 YOLOv8 检测和闭环控制的唯一目标类别。
+  \item \textbf{追踪目标}: Target 飞到哪里，Tracker 就跟到哪里。
+  \item \textbf{视觉约束}: 追踪过程中 Target 应持续保持在屏幕中心附近，不能脱离视线。
+\end{itemize}
+
+当前实现强调接近真实视觉追踪：控制器不直接使用 Target 的真值位置作为追踪输入，而是使用 Tracker 相机画面中的 YOLO 检测框。AirSim 真值只用于仿真初始化、目标轨迹生成和评估。
+
+\section{总体架构}
+
+闭环系统由五个模块组成：
+
+\begin{enumerate}
+  \item \textbf{图像采集}: 从 Tracker 的相机读取 RGB 图像，必要时读取深度图。
+  \item \textbf{YOLOv8 检测}: 在图像中识别 Target 无人机，输出边界框、置信度和类别。
+  \item \textbf{运动预测}: 根据历史边界框估计目标在未来短时间内的位置。
+  \item \textbf{视觉伺服控制}: 根据预测框中心误差和框尺寸计算控制命令。
+  \item \textbf{AirSim 执行}: 将速度、yaw 和云台命令发送给 Tracker。
+\end{enumerate}
+
+运行时数据流如下：
+
+\begin{lstlisting}
+Tracker camera frame
+  -> YOLOv8 detector
+  -> ImagePlaneKalmanPredictor
+  -> VisualServoController
+  -> AirSim body velocity / yaw / gimbal command
+  -> next camera frame
+\end{lstlisting}
+
+\section{图像检测模型}
+
+\subsection{检测输入和输出}
+
+YOLOv8 的输入是 Tracker 相机的 BGR/RGB 图像。输出被封装为 Detection：
+
+\begin{lstlisting}
+Detection(
+    xyxy=(x1, y1, x2, y2),
+    confidence=conf,
+    class_id=0
+)
+\end{lstlisting}
+
+其中：
+
+\begin{itemize}
+  \item $x_1,y_1,x_2,y_2$ 是边界框左上角和右下角像素坐标。
+  \item $confidence$ 是 YOLO 对目标无人机的置信度。
+  \item $class\_id=0$ 表示类别 drone。
+\end{itemize}
+
+检测框中心和尺寸定义为：
+
+\[
+c_x=\frac{x_1+x_2}{2}, \quad
+c_y=\frac{y_1+y_2}{2}
+\]
+
+\[
+w=x_2-x_1, \quad h=y_2-y_1
+\]
+
+\subsection{为什么重新采集无人机数据}
+
+系统不使用旧数据集，因为旧数据可能包含非无人机目标、目标过小、目标偏离中心或标注策略不一致。当前数据集的采集意图是：Target 是一架真实 AirSim 无人机，目标在画面中较大、居中，并尽可能露出机架和螺旋桨，从而让 YOLOv8 学到目标无人机的可识别结构。
+
+\section{运动预测算法}
+
+\subsection{为什么使用 Kalman 而不是 LSTM}
+
+本版本使用图像平面 Kalman Filter，而不是 LSTM 或 Transformer。主要原因如下：
+
+\begin{itemize}
+  \item 当前闭环输入就是 YOLO 检测框，图像平面预测可以直接接入控制器。
+  \item Kalman Filter 对小样本、短时预测和在线运行更稳健。
+  \item 参数少、可解释，便于调试 AirSim 中的控制问题。
+  \item LSTM 需要额外轨迹数据、训练和泛化验证，作为后续版本更合适。
+\end{itemize}
+
+\subsection{状态向量}
+
+预测器维护 8 维状态：
+
+\[
+\mathbf{x}=
+\begin{bmatrix}
+c_x & c_y & w & h & v_x & v_y & v_w & v_h
+\end{bmatrix}^T
+\]
+
+含义如下：
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{3cm}p{10cm}}
+\toprule
+变量 & 含义 \\
+\midrule
+$c_x,c_y$ & 目标框中心像素坐标 \\
+$w,h$ & 目标框宽度和高度，用来反映目标距离变化 \\
+$v_x,v_y$ & 目标中心在图像平面上的速度 \\
+$v_w,v_h$ & 目标框尺寸变化速度 \\
+\bottomrule
+\end{longtable}
+
+\subsection{运动模型}
+
+使用常速度模型：
+
+\[
+\mathbf{x}_{k|k-1} = \mathbf{F}(\Delta t)\mathbf{x}_{k-1|k-1}
+\]
+
+其中状态转移矩阵为：
+
+\[
+\mathbf{F}(\Delta t)=
+\begin{bmatrix}
+1&0&0&0&\Delta t&0&0&0\\
+0&1&0&0&0&\Delta t&0&0\\
+0&0&1&0&0&0&\Delta t&0\\
+0&0&0&1&0&0&0&\Delta t\\
+0&0&0&0&1&0&0&0\\
+0&0&0&0&0&1&0&0\\
+0&0&0&0&0&0&1&0\\
+0&0&0&0&0&0&0&1
+\end{bmatrix}
+\]
+
+这个模型表示：短时间内目标框中心和尺寸按当前速度线性变化。对 0.15 s 到 0.30 s 的控制前馈而言，这个假设通常足够好。
+
+\subsection{观测模型}
+
+YOLO 每次检测提供观测：
+
+\[
+\mathbf{z}_k=
+\begin{bmatrix}
+c_x & c_y & w & h
+\end{bmatrix}^T
+\]
+
+观测矩阵为：
+
+\[
+\mathbf{H}=
+\begin{bmatrix}
+1&0&0&0&0&0&0&0\\
+0&1&0&0&0&0&0&0\\
+0&0&1&0&0&0&0&0\\
+0&0&0&1&0&0&0&0
+\end{bmatrix}
+\]
+
+Kalman 更新流程：
+
+\[
+\mathbf{y}_k=\mathbf{z}_k-\mathbf{H}\mathbf{x}_{k|k-1}
+\]
+
+\[
+\mathbf{S}_k=\mathbf{H}\mathbf{P}_{k|k-1}\mathbf{H}^T+\mathbf{R}
+\]
+
+\[
+\mathbf{K}_k=\mathbf{P}_{k|k-1}\mathbf{H}^T\mathbf{S}_k^{-1}
+\]
+
+\[
+\mathbf{x}_{k|k}=\mathbf{x}_{k|k-1}+\mathbf{K}_k\mathbf{y}_k
+\]
+
+\[
+\mathbf{P}_{k|k}=(\mathbf{I}-\mathbf{K}_k\mathbf{H})\mathbf{P}_{k|k-1}
+\]
+
+\subsection{未来位置预测}
+
+更新当前状态后，预测器向未来 $T_h$ 秒前推：
+
+\[
+\hat{\mathbf{x}}_{k+T_h}=\mathbf{F}(T_h)\mathbf{x}_{k|k}
+\]
+
+默认：
+
+\[
+T_h=0.2s
+\]
+
+这个时间用于补偿：
+
+\begin{itemize}
+  \item 图像采集延迟
+  \item YOLO 推理延迟
+  \item Python 控制循环延迟
+  \item AirSim 速度命令执行和无人机响应延迟
+\end{itemize}
+
+控制器最终追踪的是预测框中心，而不是原始检测框中心。
+
+\subsection{短时丢检处理}
+
+当 YOLO 暂时没有检测到 Target 时，预测器不立即失败，而是继续使用 Kalman 预测：
+
+\begin{lstlisting}
+if detection is None and age <= max_prediction_gap_s:
+    return predicted_detection
+else:
+    return None
+\end{lstlisting}
+
+默认：
+
+\[
+max\_prediction\_gap\_s=0.6s
+\]
+
+这样可以覆盖短时运动模糊、置信度波动或目标被画面边缘部分遮挡的情况。超过阈值后，预测不再可信，系统交回原有搜索逻辑。
+
+\section{视觉伺服控制}
+
+\subsection{归一化中心误差}
+
+设图像宽高为 $W,H$，预测框中心为 $(\hat{c}_x,\hat{c}_y)$，归一化中心误差为：
+
+\[
+e_x=\frac{\hat{c}_x-W/2}{W/2}
+\]
+
+\[
+e_y=\frac{\hat{c}_y-H/2}{H/2}
+\]
+
+其中：
+
+\begin{itemize}
+  \item $e_x>0$ 表示目标在画面右侧。
+  \item $e_x<0$ 表示目标在画面左侧。
+  \item $e_y>0$ 表示目标在画面下方。
+  \item $e_y<0$ 表示目标在画面上方。
+\end{itemize}
+
+控制目标是让：
+
+\[
+e_x \rightarrow 0,\quad e_y \rightarrow 0
+\]
+
+\subsection{Yaw 控制}
+
+水平方向使用 yaw rate 修正：
+
+\[
+\omega_{yaw}=clip(k_{yaw}e_x,-\omega_{max},\omega_{max})
+\]
+
+当目标偏右时，Tracker 向右转；当目标偏左时，Tracker 向左转。为了减少抖动，在中心附近设置 deadzone：
+
+\[
+e_x=0 \quad \text{if} \quad |e_x|<deadzone
+\]
+
+\subsection{垂直速度控制}
+
+垂直方向使用机体垂直速度修正：
+
+\[
+v_z=clip(k_z e_y,-v_{z,max},v_{z,max})
+\]
+
+在 AirSim NED 坐标系中，$z$ 轴向下为正，具体符号由现有控制器封装处理。工程实现中只需要保证：目标在画面上方时 Tracker 调整高度使目标回到中心，目标在画面下方时反向调整。
+
+\subsection{前后距离控制}
+
+系统不强依赖深度图，因为无人机螺旋桨和细小结构会让深度中值不稳定。当前实现使用检测框宽度控制距离：
+
+\[
+e_s=w_{desired}-\frac{\hat{w}}{W}
+\]
+
+\[
+v_x=clip(k_s e_s,-v_{back,max},v_{forward,max})
+\]
+
+含义：
+
+\begin{itemize}
+  \item 框太小，说明目标太远，Tracker 前进。
+  \item 框太大，说明目标太近，Tracker 后退。
+  \item 框接近期望宽度，保持距离。
+\end{itemize}
+
+\subsection{云台辅助}
+
+云台 yaw 用于快速把目标拉回画面中心：
+
+\[
+gimbal_{yaw} \leftarrow clip(gimbal_{yaw}+k_g e_x,-g_{max},g_{max})
+\]
+
+在当前成品参数中，pitch 云台积分关闭，垂直方向主要由 Tracker 高度控制完成。这避免 pitch 积分漂移导致长时间追踪后目标跑到画面上边缘。
+
+\section{丢失恢复策略}
+
+系统的丢失恢复分三层：
+
+\begin{enumerate}
+  \item \textbf{短时丢检}: Kalman 预测器继续输出预测框，控制器仍然追踪预测位置。
+  \item \textbf{预测超时}: 预测器返回 None，说明历史状态不再可靠。
+  \item \textbf{搜索扫描}: 云台或机体按最后一次目标方向扫描，直到 YOLO 重新检测到目标。
+\end{enumerate}
+
+这比单纯扫描更稳，因为大多数丢检不是目标真的消失，而是检测模型短时间没有给出高置信度框。
+
+\section{工程实现}
+
+\subsection{核心文件}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{5cm}p{9cm}}
+\toprule
+文件 & 作用 \\
+\midrule
+\texttt{src/drone\_tracker/detector.py} & YOLOv8 检测封装，输出 Detection \\
+\texttt{src/drone\_tracker/predictor.py} & ImagePlaneKalmanPredictor 和 PredictionResult \\
+\texttt{src/drone\_tracker/controller.py} & 视觉伺服控制器，计算速度和 yaw 命令 \\
+\texttt{src/drone\_tracker/metrics.py} & CSV 和 summary 指标输出 \\
+\texttt{scripts/run\_tracking.py} & 主追踪闭环，集成检测、预测、控制和日志 \\
+\texttt{config/tracking\_config.json} & 启用预测的追踪配置 \\
+\texttt{config/tracking\_config\_no\_prediction.json} & 关闭预测的 A/B 对照配置 \\
+\bottomrule
+\end{longtable}
+
+\subsection{预测器接口}
+
+\begin{lstlisting}
+predictor = ImagePlaneKalmanPredictor(
+    horizon_s=0.2,
+    max_prediction_gap_s=0.6,
+    process_noise=80.0,
+    measurement_noise=25.0,
+)
+
+prediction = predictor.step(
+    detection=raw_detection,
+    timestamp_s=loop_start,
+    image_width=1280,
+    image_height=720,
+)
+
+command = controller.command(
+    prediction.detection,
+    frame.depth,
+    image_width,
+    image_height,
+    lost_time,
+)
+\end{lstlisting}
+
+这样设计的好处是：控制器仍然接收 Detection，不需要知道输入来自 YOLO 原始检测还是 Kalman 预测。
+
+\subsection{配置项}
+
+\begin{longtable}{>{\raggedright\arraybackslash}p{4cm}p{3cm}p{7cm}}
+\toprule
+配置项 & 默认值 & 说明 \\
+\midrule
+\texttt{prediction.enabled} & true & 是否启用预测 \\
+\texttt{prediction.horizon\_s} & 0.2 & 向未来预测的时间 \\
+\texttt{prediction.max\_prediction\_gap\_s} & 0.6 & 丢检后继续使用预测的最长时间 \\
+\texttt{prediction.process\_noise} & 80.0 & 目标运动变化噪声 \\
+\texttt{prediction.measurement\_noise} & 25.0 & YOLO 检测观测噪声 \\
+\texttt{control.center\_deadzone} & 0.035 & 中心误差死区 \\
+\texttt{control.desired\_box\_width\_norm} & 0.18 & 期望目标框宽度比例 \\
+\texttt{control.k\_yaw} & 38.0 & yaw 纠偏增益 \\
+\texttt{control.k\_z} & 2.0 & 垂直方向纠偏增益 \\
+\texttt{control.k\_size} & 7.0 & 距离控制增益 \\
+\bottomrule
+\end{longtable}
+
+\section{日志与指标}
+
+追踪 CSV 记录每个控制周期的数据。加入预测器后，新增字段：
+
+\begin{itemize}
+  \item \texttt{prediction\_used}: 当前控制是否使用预测结果。
+  \item \texttt{predicted\_center\_x}, \texttt{predicted\_center\_y}: 预测框中心。
+  \item \texttt{raw\_center\_x}, \texttt{raw\_center\_y}: YOLO 原始检测框中心。
+  \item \texttt{prediction\_age\_s}: 距离最近一次真实检测的时间。
+\end{itemize}
+
+summary 指标包括：
+
+\begin{itemize}
+  \item \texttt{visible\_rate}: 目标可见率。
+  \item \texttt{lost\_count}: 丢失段数量。
+  \item \texttt{max\_lost\_duration\_s}: 最大连续丢失时间。
+  \item \texttt{center\_error\_mean\_px}: 平均中心误差。
+  \item \texttt{center\_error\_p95\_px}: 95 分位中心误差。
+  \item \texttt{prediction\_used\_rate}: 使用预测的周期比例。
+\end{itemize}
+
+\section{验证方法}
+
+\subsection{离线验证}
+
+\begin{lstlisting}
+cd E:\airsim_yolov8_drone_tracker
+python -m compileall src scripts tests
+python tests\test_predictor.py
+\end{lstlisting}
+
+离线测试检查：
+
+\begin{itemize}
+  \item 预测器能根据连续右移检测框预测更靠右的未来中心。
+  \item 短时丢检时仍返回预测框。
+  \item 超过 \texttt{max\_prediction\_gap\_s} 后返回 None。
+\end{itemize}
+
+\subsection{AirSim 闭环验证}
+
+启用预测：
+
+\begin{lstlisting}
+python scripts\run_tracking.py ^
+  --config config\tracking_config.json ^
+  --weights D:/sim/runs/drone_tracker/detect/drone_centered_yolov8s_v2/weights/best.pt ^
+  --seconds 90
+\end{lstlisting}
+
+关闭预测对照：
+
+\begin{lstlisting}
+python scripts\run_tracking.py ^
+  --config config\tracking_config_no_prediction.json ^
+  --weights D:/sim/runs/drone_tracker/detect/drone_centered_yolov8s_v2/weights/best.pt ^
+  --seconds 90
+\end{lstlisting}
+
+验收标准：
+
+\begin{itemize}
+  \item \texttt{visible\_rate >= 0.98}
+  \item \texttt{lost\_count == 0}
+  \item \texttt{center\_error\_p95\_px <= 67.71}
+\end{itemize}
+
+\section{调参建议}
+
+\begin{itemize}
+  \item 如果目标运动很平滑，但控制总是慢半拍，可以把 \texttt{horizon\_s} 从 0.2 增加到 0.25。
+  \item 如果目标突然转向时预测过冲，可以把 \texttt{horizon\_s} 降到 0.15。
+  \item 如果 YOLO 框抖动明显，可以增大 \texttt{measurement\_noise}。
+  \item 如果预测跟不上快速机动，可以增大 \texttt{process\_noise}。
+  \item 如果短时丢检后预测乱飞，可以降低 \texttt{max\_prediction\_gap\_s}。
+\end{itemize}
+
+\section{局限与后续方向}
+
+当前 Kalman 预测器只在图像平面工作，不直接建模三维空间。因此它非常适合补偿短时延迟和短时丢检，但不适合长时间无观测预测。后续可以扩展：
+
+\begin{enumerate}
+  \item 使用检测框宽度和相机内参估计相对距离，形成 3D EKF。
+  \item 使用 AirSim 日志训练 GRU/LSTM 轨迹预测器，处理更复杂的机动模式。
+  \item 引入多目标数据关联，支持多架目标无人机。
+  \item 将预测器与 MPC 控制结合，提前规划更平滑的追踪轨迹。
+\end{enumerate}
+
+\section{结论}
+
+自动追踪系统的核心不是单独的 YOLO 检测，而是检测、预测、控制和恢复机制组成的闭环。YOLOv8 负责锁定目标无人机，Kalman 预测器负责根据历史框补偿未来短时运动，视觉伺服控制器负责把预测目标拉回画面中心。该结构简单、可解释、实时性好，适合当前 AirSim 双无人机追踪任务，并为后续 3D 预测和学习型轨迹预测留下了清晰扩展点。
+
+\end{document}

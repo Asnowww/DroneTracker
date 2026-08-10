@@ -1,0 +1,62 @@
+{
+  "tracker_vehicle": "Tracker",
+  "target_vehicle": "Target",
+  "camera_name": "0",
+  "camera_fov_deg": 35,
+  "image_width": 1280,
+  "image_height": 720,
+  "run_dir": "E:/airsim_yolov8_drone_tracker/runs/tracking_ablation",
+  "detector": {
+    "imgsz": 960,
+    "conf": 0.3,
+    "iou": 0.5,
+    "device": 0,
+    "half": true
+  },
+  "prediction": {
+    "enabled": false,
+    "horizon_s": 0.0,
+    "max_prediction_gap_s": 0.0,
+    "process_noise": 80.0,
+    "measurement_noise": 25.0
+  },
+  "control": {
+    "desired_distance_m": 3.0,
+    "desired_box_width_norm": 0.18,
+    "k_size": 7.0,
+    "use_depth_distance": false,
+    "center_deadzone": 0.035,
+    "k_yaw": 38.0,
+    "k_z": 2.0,
+    "k_dist": 0.65,
+    "max_yaw_rate_deg_s": 55.0,
+    "max_forward_m_s": 5.5,
+    "max_reverse_m_s": 2.0,
+    "max_vertical_m_s": 2.0,
+    "command_duration_s": 0.05,
+    "lost_grace_s": 0.3,
+    "lost_scan_yaw_rate_deg_s": 22.0
+  },
+  "gimbal": {
+    "enabled": true,
+    "k_yaw_deg": 18.0,
+    "k_pitch_deg": 0.0,
+    "max_yaw_deg": 55.0,
+    "max_pitch_deg": 30.0,
+    "body_recenter_threshold_deg": 18.0
+  },
+  "target_policy": {
+    "pattern": "front_sweep",
+    "altitude_m": 20.0,
+    "speed_m_s": 0.75,
+    "radius_m": 4.0,
+    "base_x_m": 2.0,
+    "forward_amp_m": 3.0,
+    "lateral_amp_m": 0.9,
+    "vertical_amp_m": 0.2
+  },
+  "episode": {
+    "seconds": 90,
+    "control_hz": 20
+  }
+}

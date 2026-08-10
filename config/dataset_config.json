@@ -1,0 +1,40 @@
+{
+  "tracker_vehicle": "Tracker",
+  "target_vehicle": "Target",
+  "camera_name": "0",
+  "camera_fov_deg": 35,
+  "image_width": 1280,
+  "image_height": 720,
+  "output_dir": "E:/airsim_yolov8_drone_tracker/datasets/airsim_drone",
+  "class_names": ["drone"],
+  "samples": 3000,
+  "val_ratio": 0.15,
+  "background_ratio": 0.04,
+  "seed": 20260727,
+  "segmentation": {
+    "target_regex": "Target[\\w]*",
+    "target_mesh_regex": "^(Quadrotor|Propeller).*_Target_\\d+$",
+    "target_id": 25,
+    "min_box_area_px": 24,
+    "settle_s": 0.25,
+    "cross_check_projection": true,
+    "min_cross_check_iou": 0.25,
+    "target_extents_m": [1.0, 1.0, 0.35]
+  },
+  "randomization": {
+    "distance_m": [3.0, 45.0],
+    "azimuth_deg": [-15.0, 15.0],
+    "elevation_deg": [-8.5, 8.5],
+    "target_yaw_deg": [-180.0, 180.0],
+    "target_pitch_deg": [-25.0, 25.0],
+    "target_roll_deg": [-25.0, 25.0],
+    "tracker_yaw_deg": [0.0, 0.0],
+    "tracker_altitude_m": [4.0, 50.0],
+    "tracker_x_m": [-120.0, 120.0],
+    "tracker_y_m": [-120.0, 120.0],
+    "weather_prob": 0.25,
+    "weather_max_intensity": 0.45,
+    "time_of_day_prob": 0.35,
+    "time_of_day_hours": [6, 20]
+  }
+}

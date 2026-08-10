@@ -1,0 +1,64 @@
+{
+  "_comment": "Phase state machine for the GS-Sim build. Claude reads this at the start of any session to resume autonomously. Each phase advances only when its gate script prints PHASE_N_PASS=true.",
+  "plan": "docs/gs_sim_plan.md",
+  "created": "2026-08-10",
+  "current_phase": 0,
+  "phases": {
+    "0": {
+      "name": "toolchain",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase0.py",
+      "criteria": "gsplat renders; >=100 FPS on 100k synthetic gaussians; rotorpy hover 10s altitude error <0.1m",
+      "artifacts": {}
+    },
+    "1": {
+      "name": "scenes",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase1.py",
+      "criteria": ">=2 scenes, PSNR >=26 on held-out views, >=80 FPS at 720p",
+      "artifacts": { "scenes_dir": "gs_sim/assets/scenes" }
+    },
+    "2": {
+      "name": "drone_gaussian",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase2.py",
+      "criteria": "composited renders show correct occlusion; rendered mask vs projected bbox IoU >=0.6; Claude contact-sheet review passes",
+      "artifacts": { "drone_ply": "gs_sim/assets/drone/target.ply" }
+    },
+    "3": {
+      "name": "gs_sim_core",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase3.py",
+      "criteria": "run_tracking --backend gs completes 45s front_sweep at >=20 Hz with visible_rate >=0.9",
+      "artifacts": {}
+    },
+    "4": {
+      "name": "dataset_and_model",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase4.py",
+      "criteria": "GS-domain val mAP50 >=0.98; mixed GS+Blocks val >=0.95",
+      "artifacts": {}
+    },
+    "5": {
+      "name": "performance_figure8",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase5.py",
+      "criteria": "figure8 x 3 predictors all meet standard gates (visible >=0.98, lost=0, p95 <=67.71px)",
+      "artifacts": {}
+    },
+    "6": {
+      "name": "final_regression",
+      "status": "pending",
+      "gate": "gs_sim/scripts/verify_phase6.py",
+      "criteria": "27-run matrix (3 scenes x 3 patterns x 3 predictors) complete with report",
+      "artifacts": {}
+    }
+  },
+  "carried_over": {
+    "yolo_blocks_weights": "runs/detect/drone_sim_ft/weights/best.pt",
+    "yolo_blocks_metrics": { "map50": 0.994, "precision": 0.996, "recall": 0.994 },
+    "airsim_baseline_report": "runs/auto_test/20260727-174403/report.md",
+    "acceptance_p95_px": 67.71
+  },
+  "notes": []
+}

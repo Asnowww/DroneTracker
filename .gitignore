@@ -1,0 +1,25 @@
+# Datasets and model weights are too large for git.
+# Collected data is reproducible: scripts/collect_dataset.py
+# Pretrained weights come from Hugging Face: scripts/fetch_hf_assets.py
+datasets/
+weights/
+runs/
+*.pt
+*.engine
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local agent/runtime state
+.claude/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
