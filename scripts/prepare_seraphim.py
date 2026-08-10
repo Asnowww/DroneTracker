@@ -47,38 +47,46 @@ def classify(zip_path: Path) -> tuple[str, str] | None:
     return split, kind
 
 
-def extract_all(snapshot: Path, staging: Path) -> dict[tuple[str, str], int]:
+def extract_all(snapshot: Path, staging: Path) -> tuple[dict[tuple[str, str], int], list[str]]:
     counts: Counter[tuple[str, str]] = Counter()
+    skipped: list[str] = []
     archives = sorted(snapshot.rglob("*.zip"))
     if not archives:
         raise SystemExit(f"no .zip archives under {snapshot} — did the download finish?")
     print(f"found {len(archives)} archives")
     for archive in archives:
-        target = classify(archive.relative_to(snapshot))
+        rel = archive.relative_to(snapshot)
+        target = classify(rel)
         if target is None:
-            print(f"  skip (unclassified): {archive.relative_to(snapshot)}")
+            print(f"  skip (unclassified): {rel}")
             continue
         split, kind = target
         dest = staging / split / kind
         dest.mkdir(parents=True, exist_ok=True)
-        print(f"  extracting {archive.relative_to(snapshot)} -> {split}/{kind}")
-        with zipfile.ZipFile(archive) as zf:
-            for member in zf.infolist():
-                if member.is_dir():
-                    continue
-                name = Path(member.filename).name
-                if not name or name.startswith("."):
-                    continue
-                suffix = Path(name).suffix.lower()
-                if kind == "images" and suffix not in IMAGE_SUFFIXES:
-                    continue
-                if kind == "labels" and suffix != ".txt":
-                    continue
-                out_path = dest / name
-                with zf.open(member) as src, out_path.open("wb") as dst:
-                    shutil.copyfileobj(src, dst)
-                counts[(split, kind)] += 1
-    return dict(counts)
+        print(f"  extracting {rel} -> {split}/{kind}")
+        try:
+            with zipfile.ZipFile(archive) as zf:
+                for member in zf.infolist():
+                    if member.is_dir():
+                        continue
+                    name = Path(member.filename).name
+                    if not name or name.startswith("."):
+                        continue
+                    suffix = Path(name).suffix.lower()
+                    if kind == "images" and suffix not in IMAGE_SUFFIXES:
+                        continue
+                    if kind == "labels" and suffix != ".txt":
+                        continue
+                    out_path = dest / name
+                    with zf.open(member) as src, out_path.open("wb") as dst:
+                        shutil.copyfileobj(src, dst)
+                    counts[(split, kind)] += 1
+        except (zipfile.BadZipFile, EOFError, OSError) as exc:
+            # A partially downloaded archive must not abort the whole run — report
+            # it and build the dataset from whatever is complete.
+            print(f"  SKIP (unreadable, still downloading?): {rel} [{type(exc).__name__}]")
+            skipped.append(str(rel))
+    return dict(counts), skipped
 
 
 def pair_and_validate(staging: Path, out_root: Path, single_class: bool) -> dict:
@@ -157,8 +165,10 @@ def main() -> None:
         shutil.rmtree(out_root, ignore_errors=True)
         shutil.rmtree(staging, ignore_errors=True)
 
-    extracted = extract_all(snapshot, staging)
+    extracted, skipped = extract_all(snapshot, staging)
     print(f"extracted: { {f'{s}/{k}': v for (s, k), v in extracted.items()} }")
+    if skipped:
+        print(f"unreadable archives skipped: {skipped}")
 
     stats = pair_and_validate(staging, out_root, single_class=not args.keep_multiclass)
     shutil.rmtree(staging, ignore_errors=True)
@@ -180,6 +190,7 @@ def main() -> None:
     )
 
     stats["data_yaml"] = str(data_yaml)
+    stats["skipped_archives"] = skipped
     save_json(out_root / "prepare_stats.json", stats)
     print(f"train paired: {stats['train']['paired']}")
     print(f"val   paired: {stats['val']['paired']}")
