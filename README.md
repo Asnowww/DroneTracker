@@ -49,25 +49,48 @@ Tracker 相机 -> YOLO 检测 -> 运动预测 -> 视觉伺服控制 -> AirSim �
 | `tests/` | 离线测试，无需 AirSim、GPU 或训练权重 |
 | `docs/` | 开发方案与算法文档 |
 
+## 检测模型
+
+四级递进训练（`scripts/train_yolo.py`），当前完成到第 2 级：
+
+| 级 | 权重 | 数据 |
+|---|---|---|
+| 0 | `yolov8s.pt` | COCO |
+| 1 | `runs/detect/real_prior_v8s` | Seraphim 4 万张真实无人机图 |
+| 2 | `runs/detect/mixed_ft_v8s` ← **当前使用** | 1.8 万真实 + 2503 AirSim（7.19:1） |
+| 3 | 待做 | 你自己平台的空对空实拍，首飞前必需 |
+
+分域评估（`scripts/eval_domains.py`）：
+
+| 模型 | 参数 | 真实域 mAP50 | 真实域 mAP50-95 | 仿真域 mAP50 |
+|---|---|---|---|---|
+| **mixed_ft_v8s** | 11.1M | 0.9185 | 0.6277 | **0.9950** |
+| real_prior_v8s | 11.1M | 0.9287 | 0.6291 | 0.9656 |
+
+混合微调只损失 0.0014 的真实域精度，换来仿真域接近满分。
+
 ## 运动预测
 
-两种可选，配置里切换 `prediction.model`：
+配置里切换 `prediction.model`：`kalman`（8 维常速度）或 `imm`（12 维多模型，**默认**）。
 
-- `kalman` — 8 维常速度 Kalman，已在 AirSim 闭环验证的基线
-- `imm` — 12 维 IMM，并行 CV / CA / 机动三个模型按后验概率融合
-
-`tests/test_prediction_benchmark.py` 实测（24 s @ 20 Hz，检测噪声 σ=4 px，丢检率 8%）：
+`tests/test_prediction_benchmark.py` 离线实测（24 s @ 20 Hz，检测噪声 σ=4 px，丢检率 8%）：
 
 | 轨迹 | 无预测 | kalman | imm |
 |---|---|---|---|
 | 平滑巡航 RMSE | 15.55 px | 7.08 px | **6.20 px** |
 | 急转机动 RMSE | 38.00 px | 35.09 px | **27.20 px** |
-| 急转机动 P95 | 77.76 px | 61.73 px | **48.14 px** |
 
-## 验收阈值
+## 闭环回归结果
 
-`config/auto_test_plan.json`：
+`runs/auto_test/20260810-194356`，**9/9 通过**（90 s × 3 轨迹 × 3 预测配置）：
 
-```json
-{ "visible_rate_min": 0.98, "lost_count_max": 0, "center_error_p95_px_max": 67.71 }
-```
+| 轨迹 / 配置 | 可见率 | 丢失 | 中心误差 p95 |
+|---|---|---|---|
+| front_sweep / imm | 1.000 | 0 | **43.3 px** |
+| lateral_dash / imm | 1.000 | 0 | **23.0 px** |
+| figure8 / imm（压力项） | 1.000 | 0 | 97.9 px |
+
+检测器从 YOLOv11x 换到 YOLOv8s 后，控制环从 5.9 Hz 提升到 **8.1 Hz**，未改动任何控制增益即让所有指标改善——figure8 更是从可见率 0.70 / 7 次丢失变为满分。**环路速率是比增益更有效的杠杆。**
+
+验收阈值见 `config/auto_test_plan.json`：标准轨迹 `p95 ≤ 67.71 / visible ≥ 0.98 / lost = 0`；
+`figure8` 为压力层，阈值放宽至 160 px。

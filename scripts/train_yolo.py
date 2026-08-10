@@ -36,6 +36,14 @@ def main() -> None:
     parser.add_argument("--project", default=str(ROOT / "runs" / "detect"))
     parser.add_argument("--name", default="drone_airsim")
     parser.add_argument("--patience", type=int, default=30)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="dataloader workers. Windows spawns rather than forks, and the "
+        "ultralytics default of 8 has been observed to kill workers mid-epoch on "
+        "large datasets here; 4 is stable.",
+    )
     parser.add_argument("--freeze", type=int, default=0, help="freeze the first N layers")
     parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
@@ -56,6 +64,7 @@ def main() -> None:
         project=args.project,
         name=args.name,
         patience=args.patience,
+        workers=args.workers,
         freeze=args.freeze or None,
         resume=args.resume,
         # The target is small and far more often distant than close, so keep scale

@@ -1,0 +1,11 @@
+{
+  "base": "runs\\detect\\real_prior_v8s\\weights\\best.pt",
+  "data": "datasets\\mixed\\data.yaml",
+  "best_weights": "E:\\airsim_yolov8_drone_tracker\\runs\\detect\\mixed_ft_v8s\\weights\\best.pt",
+  "imgsz": 640,
+  "epochs": 25,
+  "map50": 0.923156035472063,
+  "map50_95": 0.6467858243988461,
+  "precision": 0.9442952745765378,
+  "recall": 0.8790943064409761
+}

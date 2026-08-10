@@ -15,7 +15,7 @@
   },
   "prediction": {
     "enabled": true,
-    "model": "kalman",
+    "model": "imm",
     "horizon_s": 0.2,
     "max_prediction_gap_s": 0.6,
     "process_noise": 80.0,

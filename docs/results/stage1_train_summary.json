@@ -1,0 +1,11 @@
+{
+  "stage": "1_real_prior",
+  "base": "yolov8s.pt",
+  "data": "seraphim_yolo (40k real train / 8349 real val)",
+  "epochs_completed": 20,
+  "params_M": 11.1,
+  "map50": 0.9286638901088436,
+  "map50_95": 0.6290616633865913,
+  "precision": 0.9408126038805198,
+  "recall": 0.8825709096375429
+}
