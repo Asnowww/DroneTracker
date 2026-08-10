@@ -15,6 +15,7 @@ Dataset (large, opt-in):
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -49,14 +50,21 @@ def fetch_weights(out_dir: Path, which: list[str]) -> dict[str, str]:
     return resolved
 
 
-def fetch_dataset(out_dir: Path) -> str:
+def fetch_dataset(out_dir: Path, patterns: list[str] | None = None) -> str:
     from huggingface_hub import snapshot_download
 
-    print(
-        f"downloading dataset {DATASET_REPO} (CC BY 4.0). This is tens of GB — "
-        "make sure the destination has room."
+    print(f"downloading dataset {DATASET_REPO} (CC BY 4.0) -> {out_dir}")
+    if patterns:
+        print(f"  restricted to patterns: {patterns}")
+    else:
+        print("  full snapshot is ~9.1 GB — make sure the destination has room.")
+    path = snapshot_download(
+        repo_id=DATASET_REPO,
+        repo_type="dataset",
+        local_dir=str(out_dir),
+        allow_patterns=patterns or None,
+        max_workers=int(os.environ.get("HF_DOWNLOAD_WORKERS", "8")),
     )
-    path = snapshot_download(repo_id=DATASET_REPO, repo_type="dataset", local_dir=str(out_dir))
     print(f"  -> {path}")
     print(
         "Reminder: this set mixes real photos with marketing and synthetic renders. "
@@ -73,6 +81,14 @@ def main() -> None:
     parser.add_argument("--weights-dir", default=str(ROOT / "weights" / "hf"))
     parser.add_argument("--dataset", action="store_true", help="download the Seraphim dataset (large)")
     parser.add_argument("--dataset-dir", default=str(ROOT / "datasets" / "seraphim"))
+    parser.add_argument(
+        "--dataset-patterns",
+        nargs="*",
+        default=None,
+        help="only fetch matching paths, e.g. 'train/images/batch_001.zip' 'train/labels/*' "
+        "'test/*'. Two of the four train image batches (~37k images) are already plenty "
+        "for a generic drone prior and halve the download.",
+    )
     args = parser.parse_args()
 
     if not args.weights and not args.dataset:
@@ -83,7 +99,7 @@ def main() -> None:
         if args.weights:
             manifest["weights"] = fetch_weights(Path(args.weights_dir), args.which)
         if args.dataset:
-            manifest["dataset"] = fetch_dataset(Path(args.dataset_dir))
+            manifest["dataset"] = fetch_dataset(Path(args.dataset_dir), args.dataset_patterns)
     except ImportError as exc:
         raise SystemExit("pip install huggingface_hub") from exc
 
